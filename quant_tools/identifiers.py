@@ -42,6 +42,44 @@ _EQUITY_TYPES = {
     "Preference", "Ltd Part", "MLP", "Stapled Security",
 }
 
+# ── Ticker normalisation for OpenFIGI ─────────────────────────────────────────
+
+# iShares strips dots from US tickers (BRK.B → BRKB). Map back to real tickers.
+_TICKER_ALIASES: dict[str, str] = {
+    "BRKB": "BRK.B",
+    "BRKA": "BRK.A",
+}
+
+# LSE tickers end with "." in iShares (BP., RR., BA., NG.).
+# OpenFIGI expects the Bloomberg convention: trailing "." → "/"
+_LSE_EXCHANGES = {"London Stock Exchange"}
+
+# Nordic Stockholm/Copenhagen: iShares includes share class as "TICKER CLASS"
+# (e.g. "INVE B", "NOVO B"). OpenFIGI wants spaces removed (INVEB, NOVOB).
+_NORDIC_CONCAT_EXCHANGES = {"Nasdaq Omx Nordic", "Omx Nordic Exchange Copenhagen A/S"}
+
+# Nordic Helsinki: iShares appends country code ("NDA FI"). OpenFIGI uses
+# only the base ticker before the space (NDA).
+_NORDIC_PREFIX_EXCHANGES = {"Nasdaq Omx Helsinki Ltd."}
+
+# Italian stocks: micCode XMIL doesn't resolve in OpenFIGI; exchCode "IM" does.
+_EXCHCODE_OVERRIDE: dict[str, str] = {
+    "Borsa Italiana": "IM",
+}
+
+
+def _normalize_figi_ticker(ticker: str, exchange: str) -> str:
+    """Apply exchange-specific ticker normalisation before OpenFIGI lookup."""
+    ticker = _TICKER_ALIASES.get(ticker, ticker)
+    if exchange in _LSE_EXCHANGES:
+        if ticker.endswith("."):
+            ticker = ticker[:-1] + "/"
+    elif exchange in _NORDIC_CONCAT_EXCHANGES:
+        ticker = ticker.replace(" ", "")
+    elif exchange in _NORDIC_PREFIX_EXCHANGES:
+        ticker = ticker.split()[0]
+    return ticker
+
 # ── Exchange name → Yahoo Finance ticker suffix ───────────────────────────────
 # Source: iShares ACWI 'exchange' column values mapped to Yahoo Finance suffixes.
 # US listings have no suffix. Unknown exchanges fall back to "".
@@ -205,7 +243,8 @@ def add_yahoo_ticker(
     """
     def _make_ticker(row):
         suffix = EXCHANGE_TO_YAHOO_SUFFIX.get(row[exchange_col], "")
-        ticker = str(row[ticker_col]).replace(".", "-")  # Yahoo uses hyphens
+        ticker = _TICKER_ALIASES.get(str(row[ticker_col]), str(row[ticker_col]))
+        ticker = ticker.rstrip(".").replace(".", "-")  # Yahoo uses hyphens
         return f"{ticker}{suffix}"
 
     out = df.copy()
@@ -266,9 +305,11 @@ def enrich_with_figi(
         reqs = []
         for i in idx:
             exchange = exchanges[i]
-            ticker   = str(tickers[i])
+            ticker   = _normalize_figi_ticker(str(tickers[i]), exchange)
             if exchange in _US_EXCHANGES:
                 reqs.append({"idType": "TICKER", "idValue": ticker, "exchCode": "US"})
+            elif exchange in _EXCHCODE_OVERRIDE:
+                reqs.append({"idType": "TICKER", "idValue": ticker, "exchCode": _EXCHCODE_OVERRIDE[exchange]})
             else:
                 mic = EXCHANGE_TO_MIC.get(exchange)
                 req = {"idType": "TICKER", "idValue": ticker}
