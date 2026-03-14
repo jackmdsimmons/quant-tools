@@ -30,6 +30,9 @@ import io
 import os
 import zipfile
 
+# Default data directory: <quant-tools repo root>/data/
+_DEFAULT_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
+
 import pandas as pd
 import requests
 
@@ -60,14 +63,15 @@ AQR_DATASETS = {
 
 # ── French ────────────────────────────────────────────────────────────────────
 
-def fetch_french(dataset: str = "FF3", output_dir: str | None = None) -> pd.DataFrame:
+def fetch_french(dataset: str = "FF3", output_dir: str | None = _DEFAULT_DATA_DIR) -> pd.DataFrame:
     """
     Download a Kenneth French factor dataset.
 
     Parameters
     ----------
     dataset    : one of FRENCH_DATASETS keys — 'FF3', 'FF5', 'MOM', 'FF3_daily'
-    output_dir : if provided, save the result as CSV to this directory
+    output_dir : directory to save the CSV (default: quant-tools/data/).
+                 Pass None to skip saving.
 
     Returns
     -------
@@ -158,14 +162,15 @@ def _parse_aqr_sheet(raw_df: pd.DataFrame) -> pd.DataFrame:
     return data
 
 
-def fetch_aqr(dataset: str = "BAB", output_dir: str | None = None) -> dict[str, pd.DataFrame]:
+def fetch_aqr(dataset: str = "BAB", output_dir: str | None = _DEFAULT_DATA_DIR) -> dict[str, pd.DataFrame]:
     """
     Download an AQR factor dataset.
 
     Parameters
     ----------
     dataset    : one of AQR_DATASETS keys — 'BAB', 'QMJ'
-    output_dir : if provided, save each sheet as a separate CSV to this directory
+    output_dir : directory to save CSVs (default: quant-tools/data/).
+                 Pass None to skip saving.
 
     Returns
     -------
