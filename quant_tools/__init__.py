@@ -18,4 +18,6 @@ from .analytics import (
     plot_time_series_with_fill,
 )
 
-__version__ = "0.1.0"
+from .constituents import fetch as fetch_constituents, save as save_constituents, FUNDS
+
+__version__ = "0.2.0"

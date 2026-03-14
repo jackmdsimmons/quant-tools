@@ -1,0 +1,10 @@
+Metadata-Version: 2.4
+Name: quant-tools
+Version: 0.1.0
+Summary: Reusable signal evaluation and visualization toolkit for quantitative analysis
+Requires-Python: >=3.11
+Requires-Dist: pandas>=2.0.0
+Requires-Dist: numpy>=1.26.0
+Requires-Dist: scipy>=1.12.0
+Requires-Dist: matplotlib>=3.8.0
+Requires-Dist: seaborn>=0.13.0
