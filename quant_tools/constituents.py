@@ -6,19 +6,31 @@ Supports any iShares fund by passing a config dict. ACWI is the default.
 Usage (as a library)
 ---------------------
     from quant_tools.constituents import fetch, save, FUNDS
-    df = fetch("ACWI")          # 2,275 global equities
-    save(df, "ACWI", "data/")
+
+    # Basic download
+    df = fetch("ACWI")
+
+    # With identifier enrichment (yahoo_ticker + FIGI columns)
+    df = fetch("ACWI", enrich=True)
+
+    # With enrichment and auto-save
+    df = fetch("ACWI", enrich=True, output_dir="data")
 
 Usage (as a script)
 --------------------
     python -m quant_tools.constituents --ticker ACWI
-    python -m quant_tools.constituents --all
+    python -m quant_tools.constituents --ticker ACWI --enrich
+    python -m quant_tools.constituents --all --enrich
 
-CSV columns (after cleaning)
------------------------------
+CSV columns (base)
+------------------
     ticker, name, sector, asset_class, market_value, weight_pct,
     notional_value, quantity, price, country, exchange, currency,
     fx_rate, market_currency, as_of_date
+
+Additional columns when enrich=True
+-------------------------------------
+    yahoo_ticker, figi, composite_figi, share_class_figi
 """
 
 import argparse
@@ -97,18 +109,29 @@ def _parse_as_of(raw_text: str) -> str:
     return "unknown"
 
 
-def fetch(ticker: str = "ACWI", equity_only: bool = True) -> pd.DataFrame:
+def fetch(
+    ticker: str = "ACWI",
+    equity_only: bool = True,
+    enrich: bool = False,
+    output_dir: str | None = None,
+    figi_api_key: str | None = None,
+) -> pd.DataFrame:
     """
     Download iShares ETF holdings and return a clean DataFrame.
 
     Parameters
     ----------
-    ticker      : fund ticker, must be in FUNDS registry (default 'ACWI')
-    equity_only : if True, filter to Asset Class == 'Equity' (default True)
+    ticker       : fund ticker, must be in FUNDS registry (default 'ACWI')
+    equity_only  : filter to Asset Class == 'Equity' (default True)
+    enrich       : if True, add yahoo_ticker, figi, composite_figi,
+                   share_class_figi columns via identifier enrichment
+    output_dir   : if provided, save the result to this directory as CSV
+    figi_api_key : OpenFIGI API key for faster FIGI enrichment (optional).
+                   Falls back to OPENFIGI_API_KEY env var.
 
     Returns
     -------
-    DataFrame with standardised columns plus 'as_of_date'
+    DataFrame with standardised columns; enriched columns added when enrich=True
     """
     ticker = ticker.upper()
     if ticker not in FUNDS:
@@ -139,8 +162,7 @@ def fetch(ticker: str = "ACWI", equity_only: bool = True) -> pd.DataFrame:
         on_bad_lines="skip",
     )
 
-    # Drop footer rows — they appear after the last real data row and have
-    # NaN in the Ticker column or contain disclaimer text
+    # Drop footer rows
     if "Ticker" in df.columns:
         df = df[df["Ticker"].notna()]
         df = df[~df["Ticker"].str.startswith("The ", na=False)]
@@ -162,6 +184,19 @@ def fetch(ticker: str = "ACWI", equity_only: bool = True) -> pd.DataFrame:
     df = df.reset_index(drop=True)
 
     print(f"Holdings: {len(df):,} equities")
+
+    # Identifier enrichment
+    if enrich:
+        from .identifiers import add_yahoo_ticker, enrich_with_figi
+        print("Adding Yahoo tickers...")
+        df = add_yahoo_ticker(df)
+        print("Fetching FIGI identifiers (this takes a few minutes)...")
+        df = enrich_with_figi(df, api_key=figi_api_key)
+
+    # Auto-save
+    if output_dir is not None:
+        save(df, ticker, output_dir)
+
     return df
 
 
@@ -177,14 +212,17 @@ def save(df: pd.DataFrame, ticker: str = "ACWI", output_dir: str = "data") -> st
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Download iShares ETF holdings")
-    parser.add_argument("--ticker", default="ACWI", help="Fund ticker (ACWI, URTH, EEM)")
+    parser.add_argument("--ticker", default="ACWI", help=f"Fund ticker: {list(FUNDS)}")
     parser.add_argument("--all", action="store_true", help="Download all registered funds")
+    parser.add_argument("--enrich", action="store_true", help="Add yahoo_ticker and FIGI columns")
     args = parser.parse_args()
 
     tickers = list(FUNDS) if args.all else [args.ticker]
     for t in tickers:
-        df = fetch(t)
-        save(df, t, "data")
+        df = fetch(t, enrich=args.enrich, output_dir="data")
         print(f"\nSample ({t}):")
-        print(df[["ticker", "name", "sector", "country", "weight_pct"]].head(10).to_string(index=False))
+        cols = ["ticker", "name", "sector", "country", "weight_pct"]
+        if args.enrich:
+            cols += ["yahoo_ticker", "figi"]
+        print(df[cols].head(10).to_string(index=False))
         print()
