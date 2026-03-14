@@ -5,12 +5,14 @@ Sources
 -------
   Kenneth French Data Library  — FF3, FF5, Momentum (monthly + daily)
   AQR Data Library             — Betting Against Beta (BAB), Quality Minus Junk (QMJ)
+  Damodaran (NYU Stern)        — Historical returns, implied ERP, country risk,
+                                 industry betas, industry multiples
 
 All returns are returned as decimals (not percentages).
 
 Usage
 -----
-    from quant_tools.benchmarks import fetch_french, fetch_aqr, FRENCH_DATASETS
+    from quant_tools.benchmarks import fetch_french, fetch_aqr, fetch_damodaran
 
     # French factors
     ff3  = fetch_french("FF3")       # Mkt-RF, SMB, HML, RF — monthly from 1926
@@ -22,8 +24,12 @@ Usage
     bab = fetch_aqr("BAB")          # Betting Against Beta by region
     qmj = fetch_aqr("QMJ")          # Quality Minus Junk by region
 
-    # Convenience: get US factors only
-    bab_us = fetch_aqr("BAB")["USA"]
+    # Damodaran datasets
+    hist = fetch_damodaran("history")      # Annual returns: stocks/bonds/bills/inflation 1928–
+    erp  = fetch_damodaran("erp")          # Implied ERP by year 1960–
+    cr   = fetch_damodaran("country_risk") # Country risk premiums + default spreads
+    beta = fetch_damodaran("betas")        # Industry betas and leverage (US)
+    pe   = fetch_damodaran("multiples")    # Industry P/E and valuation multiples (US)
 """
 
 import io
@@ -213,3 +219,97 @@ def fetch_aqr(dataset: str = "BAB", output_dir: str | None = _DEFAULT_DATA_DIR) 
             print(f"  Saved {sheet} to {fname}")
 
     return result
+
+
+# ── Damodaran ──────────────────────────────────────────────────────────────────
+
+_DAMODARAN_BASE = "https://pages.stern.nyu.edu/~adamodar/pc/datasets/"
+
+DAMODARAN_DATASETS = {
+    "history":      {"file": "histretSP.xls",  "sheet": "Returns by year",     "marker": "Year",          "index": "Year",          "freq": "A"},
+    "erp":          {"file": "histimpl.xls",   "sheet": "Historical Impl Premiums", "marker": "Year",      "index": "Year",          "freq": "A"},
+    "country_risk": {"file": "ctryprem.xlsx",  "sheet": "ERPs by country",     "marker": "Country",       "index": "Country",       "freq": None},
+    "betas":        {"file": "betas.xls",      "sheet": "Industry Averages",   "marker": "Industry Name", "index": "Industry Name", "freq": None},
+    "multiples":    {"file": "pedata.xls",     "sheet": "Industry Averages",   "marker": "Industry Name", "index": "Industry Name", "freq": None},
+}
+
+
+def _parse_damodaran_table(raw_df: pd.DataFrame, marker: str) -> pd.DataFrame:
+    """Find the header row by searching for marker in column 0, return clean DataFrame."""
+    header_row = None
+    for i, val in enumerate(raw_df.iloc[:, 0]):
+        if str(val).strip() == marker:
+            header_row = i
+            break
+    if header_row is None:
+        return pd.DataFrame()
+
+    cols = [str(c).strip() for c in raw_df.iloc[header_row].tolist()]
+    data = raw_df.iloc[header_row + 1:].copy()
+    data.columns = cols
+    data = data[data[cols[0]].notna()].copy()
+    return data.reset_index(drop=True)
+
+
+def fetch_damodaran(
+    dataset: str,
+    output_dir: str | None = _DEFAULT_DATA_DIR,
+) -> pd.DataFrame:
+    """
+    Download a Damodaran (NYU Stern) dataset.
+
+    Parameters
+    ----------
+    dataset    : one of DAMODARAN_DATASETS keys —
+                 'history', 'erp', 'country_risk', 'betas', 'multiples'
+    output_dir : directory to save the CSV (default: quant-tools/data/).
+                 Pass None to skip saving.
+
+    Returns
+    -------
+    DataFrame. Time-series datasets ('history', 'erp') have a DatetimeIndex
+    (year-end). Cross-sectional datasets have a string index (country or
+    industry name).
+    """
+    if dataset not in DAMODARAN_DATASETS:
+        raise ValueError(f"Unknown dataset '{dataset}'. Available: {list(DAMODARAN_DATASETS)}")
+
+    spec = DAMODARAN_DATASETS[dataset]
+    url  = _DAMODARAN_BASE + spec["file"]
+
+    print(f"Downloading Damodaran {dataset}...")
+    resp = requests.get(url, headers=_HEADERS, timeout=60)
+    resp.raise_for_status()
+
+    raw = pd.read_excel(io.BytesIO(resp.content), sheet_name=spec["sheet"], header=None)
+    df  = _parse_damodaran_table(raw, spec["marker"])
+
+    index_col = spec["index"]
+
+    if spec["freq"] == "A":
+        # Time-series: filter to rows with integer years, convert to year-end DatetimeIndex
+        df = df[pd.to_numeric(df[index_col], errors="coerce").between(1900, 2100)].copy()
+        df[index_col] = pd.to_numeric(df[index_col]).astype(int)
+        df.index = pd.to_datetime(df[index_col].astype(str), format="%Y") + pd.offsets.YearEnd(0)
+        df.index.name = "date"
+        df = df.drop(columns=[index_col])
+        print(f"  {len(df):,} observations  "
+              f"({df.index[0].year} to {df.index[-1].year})")
+    else:
+        # Cross-sectional: set named index, rename region column in country_risk
+        df = df.set_index(index_col)
+        if dataset == "country_risk" and df.columns[0] != "Region":
+            df = df.rename(columns={df.columns[0]: "Region"})
+        # Drop trailing total/aggregate rows
+        df = df[~df.index.astype(str).str.lower().str.startswith("total")].copy()
+        print(f"  {len(df):,} rows")
+
+    df = df.dropna(how="all")
+
+    if output_dir is not None:
+        os.makedirs(output_dir, exist_ok=True)
+        fname = os.path.join(output_dir, f"damodaran_{dataset}.csv")
+        df.to_csv(fname)
+        print(f"  Saved to {fname}")
+
+    return df
