@@ -27,6 +27,7 @@ Usage
 """
 
 import io
+import os
 import zipfile
 
 import pandas as pd
@@ -59,13 +60,14 @@ AQR_DATASETS = {
 
 # ── French ────────────────────────────────────────────────────────────────────
 
-def fetch_french(dataset: str = "FF3") -> pd.DataFrame:
+def fetch_french(dataset: str = "FF3", output_dir: str | None = None) -> pd.DataFrame:
     """
     Download a Kenneth French factor dataset.
 
     Parameters
     ----------
-    dataset : one of FRENCH_DATASETS keys — 'FF3', 'FF5', 'MOM', 'FF3_daily'
+    dataset    : one of FRENCH_DATASETS keys — 'FF3', 'FF5', 'MOM', 'FF3_daily'
+    output_dir : if provided, save the result as CSV to this directory
 
     Returns
     -------
@@ -114,6 +116,13 @@ def fetch_french(dataset: str = "FF3") -> pd.DataFrame:
 
     print(f"  {len(df):,} observations  "
           f"({df.index[0].date()} to {df.index[-1].date()})")
+
+    if output_dir is not None:
+        os.makedirs(output_dir, exist_ok=True)
+        fname = os.path.join(output_dir, f"french_{dataset.lower()}.csv")
+        df.to_csv(fname)
+        print(f"  Saved to {fname}")
+
     return df
 
 
@@ -149,13 +158,14 @@ def _parse_aqr_sheet(raw_df: pd.DataFrame) -> pd.DataFrame:
     return data
 
 
-def fetch_aqr(dataset: str = "BAB") -> dict[str, pd.DataFrame]:
+def fetch_aqr(dataset: str = "BAB", output_dir: str | None = None) -> dict[str, pd.DataFrame]:
     """
     Download an AQR factor dataset.
 
     Parameters
     ----------
-    dataset : one of AQR_DATASETS keys — 'BAB', 'QMJ'
+    dataset    : one of AQR_DATASETS keys — 'BAB', 'QMJ'
+    output_dir : if provided, save each sheet as a separate CSV to this directory
 
     Returns
     -------
@@ -188,5 +198,13 @@ def fetch_aqr(dataset: str = "BAB") -> dict[str, pd.DataFrame]:
                       f"({df.index[0].date()} to {df.index[-1].date()})")
         except Exception:
             pass  # skip sheets that don't contain time-series data
+
+    if output_dir is not None:
+        os.makedirs(output_dir, exist_ok=True)
+        for sheet, df in result.items():
+            safe_name = sheet.lower().replace(" ", "_").replace("/", "_")
+            fname = os.path.join(output_dir, f"aqr_{dataset.lower()}_{safe_name}.csv")
+            df.to_csv(fname)
+            print(f"  Saved {sheet} to {fname}")
 
     return result
