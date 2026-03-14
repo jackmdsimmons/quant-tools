@@ -20,5 +20,6 @@ from .analytics import (
 
 from .constituents import fetch as fetch_constituents, save as save_constituents, FUNDS
 from .identifiers import add_yahoo_ticker, enrich_with_figi
+from .benchmarks import fetch_french, fetch_aqr, FRENCH_DATASETS, AQR_DATASETS
 
-__version__ = "0.3.0"
+__version__ = "0.5.0"
