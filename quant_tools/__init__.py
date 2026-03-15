@@ -22,5 +22,6 @@ from .constituents import fetch as fetch_constituents, save as save_constituents
 from .identifiers import add_yahoo_ticker, enrich_with_figi
 from .benchmarks import fetch_french, fetch_aqr, fetch_damodaran, FRENCH_DATASETS, AQR_DATASETS, DAMODARAN_DATASETS
 from .prices import fetch_prices
+from .fundamentals import fetch_fundamentals
 
-__version__ = "0.7.1"
+__version__ = "0.8.0"
