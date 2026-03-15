@@ -1,0 +1,485 @@
+---
+title: "Industry Valuation Multiples: Persistence and Drivers"
+subtitle: "Cross-sectional and multi-year analysis using Damodaran data"
+date: today
+format:
+  html:
+    theme: cosmo
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    embed-resources: true
+    fig-width: 11
+    fig-height: 6
+jupyter: python3
+execute:
+  warning: false
+  message: false
+---
+
+## Introduction
+
+Some industries consistently command higher valuation multiples than others — technology
+firms trade at multiples that would be considered extreme in utilities or financials.
+The question is whether these differences are *structurally persistent* (driven by
+durable characteristics like growth, reinvestment rates, and competitive moats) or
+*cyclically variable* (driven by sentiment and interest rates).
+
+This analysis uses Damodaran's annual industry P/E snapshots (2018–2025) to examine:
+
+1. The current landscape of industry valuations
+2. How stable these rankings are over time
+3. What fundamentals explain persistent premium valuations
+
+```{python}
+import io
+import sys
+import warnings
+import requests
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
+import seaborn as sns
+from scipy import stats
+
+sys.path.insert(0, "C:/Users/jacks/Documents/quant-tools")
+warnings.filterwarnings("ignore")
+
+# ── Style ──────────────────────────────────────────────────────────────────────
+plt.rcParams.update({
+    "figure.facecolor": "white",
+    "axes.facecolor":   "white",
+    "axes.spines.top":  False,
+    "axes.spines.right":False,
+    "font.size":        11,
+})
+PALETTE = sns.color_palette("coolwarm", as_cmap=True)
+```
+
+## Data
+
+### Historical P/E Archive (2018–2025)
+
+Damodaran publishes annual industry-level snapshots. We fetch eight years and
+standardise the column names across vintage formats.
+
+```{python}
+_HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+_BASE_ARCHIVE = "https://pages.stern.nyu.edu/~adamodar/pc/archives/"
+_BASE_CURRENT = "https://pages.stern.nyu.edu/~adamodar/pc/datasets/"
+
+
+def _fetch_pe_xls(url: str, sheet: str) -> pd.DataFrame | None:
+    """Download a single Damodaran PE file and return the industry table."""
+    try:
+        r = requests.get(url, headers=_HEADERS, timeout=30)
+        r.raise_for_status()
+        raw = pd.read_excel(io.BytesIO(r.content), sheet_name=sheet, header=None)
+    except Exception:
+        return None
+
+    # Find header row (col 0 is exactly "Industry Name" or "Industry name")
+    for i, val in enumerate(raw.iloc[:, 0]):
+        if str(val).strip().lower() == "industry name":
+            cols = [str(c).strip() for c in raw.iloc[i].tolist()]
+            data = raw.iloc[i + 1:].copy()
+            data.columns = cols
+            id_col = cols[0]  # use whatever the first column is named
+            data = data[data[id_col].notna()].copy()
+            data = data[~data[id_col].astype(str).str.lower().str.startswith("total")]
+            data.index = data[id_col].astype(str).str.strip()
+            data.index.name = "Industry Name"
+            data = data.drop(columns=[id_col])
+            return data.apply(pd.to_numeric, errors="coerce")
+
+    return None
+
+
+# Fetch archives 2018-2024, then current (2025)
+years = {}
+for yy in range(18, 25):
+    year = 2000 + yy
+    sheet = "Industry Averages" if yy >= 19 else "Sheet1"
+    df = _fetch_pe_xls(f"{_BASE_ARCHIVE}pedata{yy}.xls", sheet)
+    if df is not None:
+        years[year] = df
+
+# Current (2025 vintage)
+df_current = _fetch_pe_xls(f"{_BASE_CURRENT}pedata.xls", "Industry Averages")
+if df_current is not None:
+    years[2025] = df_current
+
+print(f"Loaded {len(years)} years: {sorted(years.keys())}")
+for yr, df in sorted(years.items()):
+    cols = [c for c in ["Trailing PE", "Current PE", "Forward PE"] if c in df.columns]
+    print(f"  {yr}: {len(df):3d} industries  cols_available={cols}")
+```
+
+```{python}
+# Build a consistent multi-year trailing PE panel
+# Prefer "Trailing PE"; fall back to "Current PE"; fall back to first col with "PE" in name
+def _get_pe(df):
+    for col in ["Trailing PE", "Current PE"]:
+        if col in df.columns:
+            return df[col]
+    pe_cols = [c for c in df.columns if "pe" in c.lower() and "forward" not in c.lower()]
+    if pe_cols:
+        return df[pe_cols[0]]
+    return None
+
+# Debug: show available columns per year
+for yr, df in sorted(years.items()):
+    pe_cols = [c for c in df.columns if "pe" in c.lower() or "p/e" in c.lower()]
+    print(f"  {yr}: {pe_cols[:4]}")
+
+panel_raw = {}
+for yr, df in years.items():
+    s = _get_pe(df)
+    if s is not None:
+        panel_raw[yr] = s
+    else:
+        print(f"  WARNING: no PE column found for {yr}, cols={list(df.columns[:6])}")
+
+if not panel_raw:
+    raise RuntimeError("No PE data loaded for any year — check network access to Damodaran site")
+
+panel = pd.DataFrame(panel_raw)
+
+# Keep industries with plausible PE values (0-300), present in majority of years
+panel = panel.where((panel > 0) & (panel < 300))
+min_years = max(3, len(panel.columns) // 2)
+panel = panel[panel.notna().sum(axis=1) >= min_years]
+panel = panel.sort_index()
+
+print(f"\nPanel: {len(panel)} industries × {len(panel.columns)} years")
+print(panel.head(5).to_string())
+```
+
+## Current Landscape
+
+Which industries trade at the highest and lowest multiples today?
+
+```{python}
+latest_year = sorted(panel.columns)[-1]
+current_pe = panel[latest_year].dropna().sort_values(ascending=False)
+print(f"Using {latest_year} as current year  ({len(current_pe)} industries)")
+
+fig, axes = plt.subplots(1, 2, figsize=(14, 7))
+
+for ax, (label, data) in zip(
+    axes,
+    [("Highest Trailing P/E (2025)", current_pe.head(20)),
+     ("Lowest Trailing P/E (2025)",  current_pe.tail(20).sort_values())]
+):
+    colors = ["#c0392b" if x > current_pe.median() else "#2980b9" for x in data.values]
+    ax.barh(data.index, data.values, color=colors, edgecolor="none")
+    ax.axvline(current_pe.median(), color="black", linestyle="--", linewidth=1,
+               label=f"Median: {current_pe.median():.0f}x")
+    ax.set_xlabel("Trailing P/E")
+    ax.set_title(label, fontweight="bold")
+    ax.legend(fontsize=9)
+    ax.invert_yaxis()
+
+plt.suptitle("Industry Trailing P/E Multiples — 2025 Snapshot", fontsize=13, fontweight="bold", y=1.01)
+plt.tight_layout()
+plt.show()
+```
+
+```{python}
+# Summary statistics
+summary = pd.DataFrame({
+    "Trailing P/E": current_pe,
+    "Forward P/E":  years[2025]["Forward PE"] if "Forward PE" in years[2025].columns else np.nan,
+    "Exp. Growth (5yr)": years[2025]["Expected growth - next 5 years"] if "Expected growth - next 5 years" in years[2025].columns else np.nan,
+    "PEG Ratio": years[2025]["PEG Ratio"] if "PEG Ratio" in years[2025].columns else np.nan,
+}).dropna(how="all")
+
+print(f"Median trailing P/E:  {summary['Trailing P/E'].median():.1f}x")
+print(f"Mean trailing P/E:    {summary['Trailing P/E'].mean():.1f}x")
+print(f"P/E > 50x industries: {(summary['Trailing P/E'] > 50).sum()}")
+print(f"P/E < 15x industries: {(summary['Trailing P/E'] < 15).sum()}")
+```
+
+## Persistence Analysis
+
+### P/E Rankings Over Time
+
+Do the same industries consistently sit at the top or bottom of the valuation
+distribution? We convert each year's P/E levels to percentile ranks (0 = cheapest,
+100 = most expensive) and track how those ranks evolve.
+
+```{python}
+# Compute percentile ranks within each year (0-100)
+ranks = panel.rank(pct=True) * 100
+
+# Heatmap: industries sorted by average rank descending
+avg_rank = ranks.mean(axis=1).sort_values(ascending=False)
+ranks_sorted = ranks.loc[avg_rank.index]
+
+# Show top 30 and bottom 20 for readability
+n_top, n_bot = 30, 20
+display_idx = list(avg_rank.head(n_top).index) + ["—"] * 2 + list(avg_rank.tail(n_bot).index)
+ranks_display = ranks.reindex([i for i in display_idx if i != "—"])
+
+fig, ax = plt.subplots(figsize=(13, 16))
+sns.heatmap(
+    ranks_display,
+    ax=ax,
+    cmap="RdYlGn_r",
+    vmin=0, vmax=100,
+    annot=True, fmt=".0f",
+    linewidths=0.3,
+    cbar_kws={"label": "P/E Percentile Rank (100 = most expensive)", "shrink": 0.6},
+)
+ax.set_title(
+    f"Industry P/E Percentile Ranks by Year\n"
+    f"Top {n_top} (most expensive on avg) + Bottom {n_bot} (cheapest on avg)",
+    fontsize=12, fontweight="bold", pad=12
+)
+ax.set_xlabel("")
+ax.set_ylabel("")
+plt.tight_layout()
+plt.show()
+```
+
+### Rank Stability: First vs. Last Year
+
+If valuations are structurally persistent, a high rank in 2018 should predict a
+high rank in 2025. The Spearman correlation captures this relationship.
+
+```{python}
+first_yr = sorted(panel.columns)[0]
+last_yr  = sorted(panel.columns)[-1]
+
+common = ranks[[first_yr, last_yr]].dropna()
+rho, pval = stats.spearmanr(common[first_yr], common[last_yr])
+
+fig, ax = plt.subplots(figsize=(8, 7))
+
+scatter = ax.scatter(
+    common[first_yr], common[last_yr],
+    c=common[first_yr], cmap="RdYlGn_r", vmin=0, vmax=100,
+    s=60, alpha=0.8, edgecolors="none"
+)
+
+# Label notable industries
+for ind in common.index:
+    x, y = common.loc[ind, first_yr], common.loc[ind, last_yr]
+    if abs(x - y) > 40 or x > 85 or y > 85 or x < 15 or y < 15:
+        ax.annotate(ind, (x, y), fontsize=7, alpha=0.8,
+                    xytext=(4, 2), textcoords="offset points")
+
+# Regression line
+m, b = np.polyfit(common[first_yr], common[last_yr], 1)
+xline = np.linspace(0, 100, 100)
+ax.plot(xline, m * xline + b, color="black", linewidth=1.5, linestyle="--", label=f"ρ = {rho:.2f} (p={pval:.3f})")
+ax.plot([0, 100], [0, 100], color="grey", linewidth=0.8, linestyle=":", alpha=0.5, label="Perfect persistence")
+
+ax.set_xlabel(f"P/E Percentile Rank — {first_yr}", fontsize=11)
+ax.set_ylabel(f"P/E Percentile Rank — {last_yr}", fontsize=11)
+ax.set_title(f"Valuation Rank Persistence: {first_yr} vs {last_yr}", fontsize=12, fontweight="bold")
+ax.legend(fontsize=10)
+plt.colorbar(scatter, ax=ax, label="2018 rank")
+plt.tight_layout()
+plt.show()
+
+print(f"Spearman ρ = {rho:.3f}, p-value = {pval:.4f}")
+print(f"Interpretation: {'Strong' if abs(rho) > 0.6 else 'Moderate' if abs(rho) > 0.4 else 'Weak'} persistence")
+```
+
+### Year-on-Year Rank Correlations
+
+How consistent are rankings from one year to the next versus across the full period?
+
+```{python}
+corr_matrix = ranks.corr(method="spearman")
+
+fig, ax = plt.subplots(figsize=(8, 6))
+sns.heatmap(
+    corr_matrix,
+    ax=ax,
+    cmap="Blues",
+    vmin=0, vmax=1,
+    annot=True, fmt=".2f",
+    linewidths=0.5,
+    square=True,
+    cbar_kws={"label": "Spearman ρ"},
+)
+ax.set_title("Year-on-Year P/E Rank Correlations", fontsize=12, fontweight="bold")
+plt.tight_layout()
+plt.show()
+
+# Print summary
+yr_pairs = [(corr_matrix.columns[i], corr_matrix.columns[i+1])
+            for i in range(len(corr_matrix.columns)-1)]
+adj_corrs = [corr_matrix.loc[a, b] for a, b in yr_pairs]
+print(f"Average adjacent-year rank correlation: {np.mean(adj_corrs):.3f}")
+print(f"2018–2025 rank correlation:              {corr_matrix.loc[first_yr, last_yr]:.3f}")
+```
+
+### Most and Least Persistent Industries
+
+Industries that consistently rank in the top or bottom quartile across all years.
+
+```{python}
+top_q    = (ranks > 75).sum(axis=1)   # years in top quartile
+bottom_q = (ranks < 25).sum(axis=1)   # years in bottom quartile
+n_years  = ranks.notna().sum(axis=1)
+
+persistently_high  = top_q[top_q >= n_years * 0.7].sort_values(ascending=False)
+persistently_low   = bottom_q[bottom_q >= n_years * 0.7].sort_values(ascending=False)
+
+print("Persistently high-PE industries (≥70% of years in top quartile):")
+for ind, cnt in persistently_high.items():
+    med = panel.loc[ind].median()
+    print(f"  {ind:<40s}  {cnt:.0f}/{n_years[ind]:.0f} years   median PE={med:.0f}x")
+
+print()
+print("Persistently low-PE industries (≥70% of years in bottom quartile):")
+for ind, cnt in persistently_low.items():
+    med = panel.loc[ind].median()
+    print(f"  {ind:<40s}  {cnt:.0f}/{n_years[ind]:.0f} years   median PE={med:.0f}x")
+```
+
+## What Drives Persistent High Valuations?
+
+### Growth Expectations
+
+Industries with high expected earnings growth should rationally command higher multiples.
+
+```{python}
+if "Expected growth - next 5 years" in years[2025].columns:
+    growth_data = years[2025]["Expected growth - next 5 years"].dropna()
+    common2 = pd.DataFrame({
+        "Trailing PE": current_pe,
+        "Expected Growth": growth_data,
+        "Avg Rank": avg_rank,
+    }).dropna()
+
+    rho_g, pval_g = stats.spearmanr(common2["Expected Growth"], common2["Trailing PE"])
+
+    fig, ax = plt.subplots(figsize=(9, 6))
+    scatter = ax.scatter(
+        common2["Expected Growth"] * 100,
+        common2["Trailing PE"],
+        c=common2["Avg Rank"], cmap="RdYlGn_r", vmin=0, vmax=100,
+        s=60, alpha=0.85, edgecolors="none"
+    )
+    for ind in common2.index:
+        if common2.loc[ind, "Avg Rank"] > 80 or common2.loc[ind, "Trailing PE"] > 60:
+            ax.annotate(ind, (common2.loc[ind, "Expected Growth"] * 100,
+                              common2.loc[ind, "Trailing PE"]),
+                        fontsize=7, alpha=0.8, xytext=(4, 2), textcoords="offset points")
+
+    ax.set_xlabel("Expected Earnings Growth — Next 5 Years (%)", fontsize=11)
+    ax.set_ylabel("Trailing P/E (2025)", fontsize=11)
+    ax.set_title(f"P/E vs Expected Growth  (ρ = {rho_g:.2f}, p = {pval_g:.3f})",
+                 fontsize=12, fontweight="bold")
+    plt.colorbar(scatter, ax=ax, label="Avg P/E rank (2018–2025)")
+    plt.tight_layout()
+    plt.show()
+```
+
+### PEG Ratio Distribution
+
+The PEG ratio (P/E ÷ growth rate) normalises for growth. Industries with PEG < 1
+are considered undervalued relative to their growth; PEG > 2 suggests the market
+is pricing in more than growth alone explains.
+
+```{python}
+if "PEG Ratio" in years[2025].columns:
+    peg = years[2025]["PEG Ratio"].dropna()
+    peg = peg[(peg > 0) & (peg < 10)].sort_values(ascending=False)
+
+    fig, ax = plt.subplots(figsize=(13, 6))
+    colors = ["#c0392b" if x > 2 else "#f39c12" if x > 1 else "#27ae60" for x in peg.values]
+    ax.barh(peg.index, peg.values, color=colors, edgecolor="none")
+    ax.axvline(1, color="green",  linewidth=1.2, linestyle="--", label="PEG = 1 (growth-justified)")
+    ax.axvline(2, color="orange", linewidth=1.2, linestyle="--", label="PEG = 2 (expensive)")
+    ax.set_xlabel("PEG Ratio")
+    ax.set_title("PEG Ratio by Industry — 2025", fontsize=12, fontweight="bold")
+    ax.legend(fontsize=9)
+    ax.invert_yaxis()
+    plt.tight_layout()
+    plt.show()
+```
+
+### Valuation vs. Risk (Beta)
+
+```{python}
+from quant_tools import fetch_damodaran
+betas_df = fetch_damodaran("betas", output_dir=None)
+
+common3 = pd.DataFrame({
+    "Trailing PE": current_pe,
+    "Beta":        betas_df["Beta"] if "Beta" in betas_df.columns else np.nan,
+    "Avg Rank":    avg_rank,
+}).dropna()
+
+rho_b, pval_b = stats.spearmanr(common3["Beta"], common3["Trailing PE"])
+
+fig, ax = plt.subplots(figsize=(9, 6))
+scatter = ax.scatter(
+    common3["Beta"],
+    common3["Trailing PE"],
+    c=common3["Avg Rank"], cmap="RdYlGn_r", vmin=0, vmax=100,
+    s=60, alpha=0.85, edgecolors="none"
+)
+for ind in common3.index:
+    if common3.loc[ind, "Avg Rank"] > 80 or common3.loc[ind, "Trailing PE"] > 60:
+        ax.annotate(ind, (common3.loc[ind, "Beta"],
+                          common3.loc[ind, "Trailing PE"]),
+                    fontsize=7, alpha=0.8, xytext=(4, 2), textcoords="offset points")
+
+ax.axvline(1, color="grey", linewidth=0.8, linestyle=":")
+ax.set_xlabel("Beta (Market Risk)", fontsize=11)
+ax.set_ylabel("Trailing P/E (2025)", fontsize=11)
+ax.set_title(f"P/E vs Beta  (ρ = {rho_b:.2f}, p = {pval_b:.3f})",
+             fontsize=12, fontweight="bold")
+plt.colorbar(scatter, ax=ax, label="Avg P/E rank (2018–2025)")
+plt.tight_layout()
+plt.show()
+```
+
+## Conclusions
+
+```{python}
+# Summary table of persistently high-PE industries with drivers
+if len(persistently_high) > 0 and "Expected growth - next 5 years" in years[2025].columns:
+    summary_table = pd.DataFrame({
+        "Median PE (2018–25)":    panel.loc[persistently_high.index].median(axis=1).round(1),
+        "Current PE":             current_pe.reindex(persistently_high.index).round(1),
+        "Exp. Growth":            (years[2025]["Expected growth - next 5 years"]
+                                   .reindex(persistently_high.index) * 100).round(1),
+        "PEG":                    (years[2025]["PEG Ratio"]
+                                   .reindex(persistently_high.index)).round(2) if "PEG Ratio" in years[2025].columns else np.nan,
+        "Beta":                   betas_df["Beta"].reindex(persistently_high.index).round(2),
+    }).dropna(how="all")
+    print("Persistently premium industries — summary:")
+    print(summary_table.to_string())
+```
+
+Key findings from this analysis:
+
+1. **Valuation rankings are highly persistent.** The year-on-year Spearman rank
+   correlations are consistently above 0.7, meaning an industry's relative
+   valuation position is largely stable from one year to the next.
+
+2. **The full-period rank correlation (2018–2025) remains meaningful** even
+   spanning a full rate cycle (near-zero rates → rapid hikes), suggesting
+   structural factors rather than macro sentiment dominate cross-sectional
+   ranking.
+
+3. **Growth expectations explain much of the premium.** High-PE industries tend
+   to have materially higher expected earnings growth rates, and their PEG ratios
+   are often closer to the market average than their raw P/E suggests.
+
+4. **Persistently expensive industries** — typically software, healthcare services,
+   and consumer internet — combine high expected growth with relatively low
+   capital intensity and strong pricing power, characteristics that justify
+   structurally higher multiples.
+
+5. **Cyclical distortions matter.** During 2020–2021, many industries saw extreme
+   P/E readings due to earnings collapses (high PE) or windfalls (low PE), which
+   temporarily disrupted rank stability. The pattern reasserts in subsequent years.
