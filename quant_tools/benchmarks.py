@@ -36,8 +36,7 @@ import io
 import os
 import zipfile
 
-# Default data directory: <quant-tools repo root>/data/
-_DEFAULT_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
+from ._defaults import _DEFAULT_DATA_DIR
 
 import pandas as pd
 import requests

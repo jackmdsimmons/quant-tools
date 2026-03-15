@@ -244,7 +244,7 @@ def add_yahoo_ticker(
     def _make_ticker(row):
         suffix = EXCHANGE_TO_YAHOO_SUFFIX.get(row[exchange_col], "")
         ticker = _TICKER_ALIASES.get(str(row[ticker_col]), str(row[ticker_col]))
-        ticker = ticker.rstrip(".").replace(".", "-")  # Yahoo uses hyphens
+        ticker = ticker.rstrip(".").replace(".", "-").replace(" ", "-")  # Yahoo uses hyphens
         return f"{ticker}{suffix}"
 
     out = df.copy()
