@@ -23,5 +23,6 @@ from .identifiers import add_yahoo_ticker, enrich_with_figi
 from .benchmarks import fetch_french, fetch_aqr, fetch_damodaran, FRENCH_DATASETS, AQR_DATASETS, DAMODARAN_DATASETS
 from .prices import fetch_prices
 from .fundamentals import fetch_fundamentals
+from .refinitiv import RefinitivClient
 
-__version__ = "0.8.0"
+__version__ = "0.9.0"
