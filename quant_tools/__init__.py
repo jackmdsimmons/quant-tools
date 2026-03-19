@@ -24,5 +24,6 @@ from .benchmarks import fetch_french, fetch_aqr, fetch_damodaran, FRENCH_DATASET
 from .prices import fetch_prices
 from .fundamentals import fetch_fundamentals
 from .refinitiv import RefinitivClient
+from .climate import fetch_ngfs, load_ngfs, carbon_cost, gdp_haircut, scenario_summary, plot_scenarios, SCENARIOS
 
-__version__ = "0.9.0"
+__version__ = "0.10.0"
